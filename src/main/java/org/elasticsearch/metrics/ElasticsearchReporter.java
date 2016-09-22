@@ -197,11 +197,16 @@ public class ElasticsearchReporter extends ScheduledReporter {
         }
 
         public ElasticsearchReporter build() throws IOException {
+            IndexNameProvider nameProvider;
+            if ((indexDateFormat != null) && (indexDateFormat.length() > 0)) {
+                nameProvider = createIndexNameProvider(index, indexDateFormat);
+            } else {
+                nameProvider = createIndexNameProvider(index);
+            }
             return new ElasticsearchReporter(registry,
                     hosts,
                     timeout,
-                    index,
-                    indexDateFormat,
+                    nameProvider,
                     bulkSize,
                     clock,
                     prefix,
@@ -213,6 +218,36 @@ public class ElasticsearchReporter extends ScheduledReporter {
                     timestampFieldname,
                     additionalFields);
         }
+
+        private IndexNameProvider createIndexNameProvider(final String indexBase) {
+            return new IndexNameProvider() {
+                @Override
+                public String getIndexBase() {
+                    return indexBase;
+                }
+
+                @Override
+                public String getIndexName(Long timestamp) {
+                    return indexBase;
+                }
+            };
+        }
+
+        protected IndexNameProvider createIndexNameProvider(final String indexBase, final String indexDateFormat) {
+            return new IndexNameProvider() {
+                private final SimpleDateFormat sdf = new SimpleDateFormat(indexDateFormat);
+                @Override
+                public String getIndexBase() {
+                    return indexBase;
+                }
+
+                @Override
+                public String getIndexName(Long timestamp) {
+                    return indexBase + "-" + sdf.format(new Date(timestamp));
+                }
+            };
+        }
+
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ElasticsearchReporter.class);
@@ -220,7 +255,7 @@ public class ElasticsearchReporter extends ScheduledReporter {
     private final String[] hosts;
     private final Clock clock;
     private final String prefix;
-    private final String index;
+    private IndexNameProvider indexNameProvider;
     private final int bulkSize;
     private final int timeout;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -228,22 +263,18 @@ public class ElasticsearchReporter extends ScheduledReporter {
     private MetricFilter percolationFilter;
     private Notifier notifier;
     private String currentIndexName;
-    private SimpleDateFormat indexDateFormat = null;
     private boolean checkedForIndexTemplate = false;
 
     public ElasticsearchReporter(MetricRegistry registry, String[] hosts, int timeout,
-                                 String index, String indexDateFormat, int bulkSize, Clock clock, String prefix, TimeUnit rateUnit, TimeUnit durationUnit,
+                                 IndexNameProvider indexNameProvider, int bulkSize, Clock clock, String prefix, TimeUnit rateUnit, TimeUnit durationUnit,
                                  MetricFilter filter, MetricFilter percolationFilter, Notifier percolationNotifier, String timestampFieldname, Map<String, Object> additionalFields) throws MalformedURLException {
         super(registry, "elasticsearch-reporter", filter, rateUnit, durationUnit);
         this.hosts = hosts;
-        this.index = index;
+        this.indexNameProvider = indexNameProvider;
         this.bulkSize = bulkSize;
         this.clock = clock;
         this.prefix = prefix;
         this.timeout = timeout;
-        if (indexDateFormat != null && indexDateFormat.length() > 0) {
-            this.indexDateFormat = new SimpleDateFormat(indexDateFormat);
-        }
         if (percolationNotifier != null && percolationFilter != null) {
             this.percolationFilter = percolationFilter;
             this.notifier = percolationNotifier;
@@ -261,7 +292,7 @@ public class ElasticsearchReporter extends ScheduledReporter {
         objectMapper.registerModule(new AfterburnerModule());
         objectMapper.registerModule(new MetricsElasticsearchModule(rateUnit, durationUnit, timestampFieldname, additionalFields));
         writer = objectMapper.writer();
-        checkForIndexTemplate();
+        checkForIndexTemplate(indexNameProvider.getIndexBase());
     }
 
     @Override
@@ -278,14 +309,11 @@ public class ElasticsearchReporter extends ScheduledReporter {
         }
 
         if (!checkedForIndexTemplate) {
-            checkForIndexTemplate();
+            checkForIndexTemplate(indexNameProvider.getIndexBase());
         }
         final long timestamp = clock.getTime() / 1000;
 
-        currentIndexName = index;
-        if (indexDateFormat != null) {
-            currentIndexName += "-" + indexDateFormat.format(new Date(timestamp * 1000));
-        }
+        currentIndexName = indexNameProvider.getIndexName(timestamp * 1000);
 
         try {
             HttpURLConnection connection = openConnection("/_bulk", "POST");
@@ -461,7 +489,7 @@ public class ElasticsearchReporter extends ScheduledReporter {
      * This index template is automatically applied to all indices which start with the index name
      * The index template simply configures the name not to be analyzed
      */
-    private void checkForIndexTemplate() {
+    private void checkForIndexTemplate(String indexBase) {
         try {
             HttpURLConnection connection = openConnection( "/_template/metrics_template", "HEAD");
             if (connection == null) {
@@ -483,7 +511,7 @@ public class ElasticsearchReporter extends ScheduledReporter {
 
                 JsonGenerator json = new JsonFactory().createGenerator(putTemplateConnection.getOutputStream());
                 json.writeStartObject();
-                json.writeStringField("template", index + "*");
+                json.writeStringField("template", indexBase + "*");
                 json.writeObjectFieldStart("mappings");
 
                 json.writeObjectFieldStart("_default_");
