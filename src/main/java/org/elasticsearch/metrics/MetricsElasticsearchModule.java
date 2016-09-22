@@ -73,7 +73,7 @@ public class MetricsElasticsearchModule extends Module {
             json.writeObjectField(timestampFieldname, gauge.timestampAsDate());
             final Object value;
             try {
-                value = gauge.value().getValue();
+                value = gauge.value();
                 json.writeObjectField("value", value);
             } catch (RuntimeException e) {
                 json.writeObjectField("error", e.toString());
